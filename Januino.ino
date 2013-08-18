@@ -6,7 +6,7 @@
  * Depends on:
  *  Mozzi library for sound synthesis http://sensorium.github.io/Mozzi/
  *  FraAngelicoHW library for easy access to Standuino controls http://www.standuino.eu/
- *  MIDI Library for parsing incoming MIDI messages http://sourceforge.net/projects/arduinomidilib/
+ *  amidino library for parsing MIDI http://github.com/mmm444/amidino
  * 
  * Consist of 2 sine wave oscillators distorted by one OR value.
  *
@@ -46,73 +46,79 @@
 #include <Oscil.h> // oscillator template
 #include <tables/sin2048_int8.h> // sine table for oscillator
 
-#include <MIDI.h>
+#include <amidino.h>
 
 // use #define for CONTROL_RATE, not a constant
-#define CONTROL_RATE 128 // powers of 2 please
+#define CONTROL_RATE 64 // powers of 2 please
 
 // use: Oscil <table_size, update_rate> oscilName (wavetable)
 Oscil <SIN2048_NUM_CELLS, AUDIO_RATE> aSin(SIN2048_DATA);
 Oscil <SIN2048_NUM_CELLS, AUDIO_RATE> bSin(SIN2048_DATA);
 
 byte note;
+int pitch = 0;
 byte aVol = 0;
 byte bVol = 0;
 byte distortion = 0;
 
-void HandleNoteOn(byte channel, byte _note, byte velocity) {   
-  //Velocity 0 acts like note Off
-  if (velocity == 0 || _note == note) {
-    aVol = velocity;
-  } else {
-    note = _note;
-    aVol = velocity;
-  }
+FakePoly poly;
+
+void handleNoteOn(byte ch, byte _note, byte vel) {
+  poly.noteOn(_note, vel);
 }
 
-void HandleNoteOff(byte channel, byte _note, byte velocity) { 
-  if (note == _note) {
-    aVol = 0;
-  }
+void handleNoteOff(byte ch, byte _note, byte vel) { 
+  handleNoteOn(ch, _note, 0);
 }
 
-void HandleAfterTouchPoly(byte channel, byte note, byte _pressure) { 
+void handleAfterTouch(byte ch, byte note, byte _pressure) { 
   aVol = _pressure;
 }
 
-void HandleAfterTouchChannel(byte channel, byte _pressure) { 
+void handleChannelPressure(byte ch, byte _pressure) { 
   aVol = _pressure;
 }
 
-void HandleControlChange(byte channel, byte number, byte value) {
+void handleControlChange(byte ch, byte number, byte val) {
   switch (number) {
     case 12:
-      bSin.setFreq(value);      
+      bSin.setFreq(val);
       break;
     case 13:
-      bVol = value;
+      bVol = val;
       break;
     case 14:
-      distortion = value;
+      distortion = val;
       break;
   }
+}
+
+void handlePitchWheel(byte ch, byte val1, byte val2) {
+  pitch = MidiParser::convertPitch(val1, val2);
+}
+
+void handlePoly(uint8_t _note, uint8_t vel) {
+  note = _note;
+  aVol = vel;
 }
 
 FraAngelicoHW fra;
+MidiParser midi;
 
 void setup(){
   startMozzi(CONTROL_RATE); // set a control rate of 64 (powers of 2 please)
   aSin.setFreq(440); // set the frequency
   
-  MIDI.begin(1);
-#if COMPILE_MIDI_THRU
-  MIDI.turnThruOff();
-#endif
-  MIDI.setHandleNoteOn(HandleNoteOn); 
-  MIDI.setHandleNoteOff(HandleNoteOff);
-  MIDI.setHandleAfterTouchPoly(HandleAfterTouchPoly);
-  MIDI.setHandleAfterTouchChannel(HandleAfterTouchChannel);
-  MIDI.setHandleControlChange(HandleControlChange);
+  Serial.begin(31250);
+  midi.setChannel(MIDI_OMNI);
+  midi.setNoteOnHandler(handleNoteOn);
+  midi.setNoteOffHandler(handleNoteOff);
+  midi.setAfterTouchHandler(handleAfterTouch);
+  midi.setChannelPressureHandler(handleChannelPressure);
+  midi.setControlChangeHandler(handleControlChange);
+  midi.setPitchWheelHandler(handlePitchWheel);
+  
+  poly.setHandler(handlePoly);
 
   fra.initialize(MOZZI);
 }
@@ -120,22 +126,28 @@ void setup(){
 
 void updateControl(){
   // put changing controls in here
+  byte oldNote = note;
+  int oldPitch = pitch;
+  
   fra.routine();
 
   if (fra.justReleased(SMALL_BUTTON_1)) {
     fra.flipSwitch(0);
     fra.setLed(4, fra.switchState(0));
+    while(Serial.read() >= 0); // flush serial buffer
+    midi.reset();
+  }
+  
+  if (fra.justReleased(SMALL_BUTTON_2)) {
+    fra.flipSwitch(1);
+    fra.setLed(5, fra.switchState(1));
   }
 
   if (fra.switchState(0)) {
-    while (USE_SERIAL_PORT.available()) {
-      MIDI.read();
+    while (Serial.available()) {
+      midi.parse(Serial.read());
     }
   } else {
-    bVol = fra.knobValue(KNOB_1) >> 3;
-    bSin.setFreq(fra.knobValue(KNOB_2) >> 3);
-    distortion = fra.knobValue(KNOB_3) >> 3;
-
     int noteShift = 30 + (fra.knobValue(KNOB_4) >> 4);
     int vol = fra.knobValue(KNOB_5) >> 3;
     byte btnNote = 0;
@@ -160,9 +172,17 @@ void updateControl(){
       aVol = 0;
     }
   }
-
   
-  aSin.setFreq(((int) mtof((unsigned char) note)));
+  if (!fra.switchState(0) || fra.switchState(1)) {
+    bVol = fra.knobValue(KNOB_1) >> 3;
+    bSin.setFreq(fra.knobValue(KNOB_2) >> 3);
+    distortion = fra.knobValue(KNOB_3) >> 3;
+  }
+
+  if (note != oldNote || pitch != oldPitch) {
+    Q16n16 freq = Q16n16_mtof(((Q16n16) note << 16) + ((long) pitch << 5));
+    aSin.setFreq_Q16n16(freq);
+  }
 }
 
 
@@ -176,3 +196,4 @@ int updateAudio(){
 void loop(){
   audioHook(); // required here
 }
+
