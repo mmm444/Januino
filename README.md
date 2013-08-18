@@ -43,7 +43,7 @@ Depends on
 
 * [Mozzi library](http://sensorium.github.io/Mozzi/) for sound synthesis
 * [FraAngelicoHW](http://www.standuino.eu/) library for easy access to Standuino controls
-* [Arduino MIDI Library](http://sourceforge.net/projects/arduinomidilib/) for parsing incoming MIDI messages
+* [amidino](http://github.com/mmm444/amidino) for parsing incoming MIDI messages
 
 License
 -------
